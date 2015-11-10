@@ -1,1 +1,1 @@
-https_clone_url,branchname
+user_with_access,https_clone_url,branchname
