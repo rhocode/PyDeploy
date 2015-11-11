@@ -1,94 +1,126 @@
-import os
-liblocation = os.path.dirname(os.path.abspath(__file__)) + '/lib'
-tempmkdir = os.mkdir
-
-def modifiedMake(name, mode=False):
-	try:
-		if (mode):
-			tempmkdir(name, mode)
-		else:
-			tempmkdir(name)
-	except OSError:
-		pass
-
-os.mkdir = modifiedMake
-
-import sys
-sys.path.append(liblocation)
-
-# from dulwich.repo import Repo
-# from dulwich.client import get_transport_and_path
-from gittle import Gittle
-
-import fnmatch
-import posixpath
-import re
-import functools
-
-def translate(pat):
-    pat = list(pat)
-    i, n = 0, len(pat)
-    res = ''
-    while i < n:
-        c = pat[i]
-        i = i+1
-        if c == '*':
-            res = res + '.*'
-        elif c == '?':
-            res = res + '.'
-        elif c == '[':
-            j = i
-            if j < n and pat[j] == '!':
-                j = j+1
-            if j < n and pat[j] == ']':
-                j = j+1
-            while j < n and pat[j] != ']':
-                j = j+1
-            if j >= n:
-                res = res + '\\['
-            else:
-                stuff = pat[i:j].replace('\\','\\\\')
-                i = j+1
-                if stuff[0] == '!':
-                    stuff = '^' + stuff[1:]
-                elif stuff[0] == '^':
-                    stuff = '\\' + stuff
-                res = '%s[%s]' % (res, stuff)
-        else:
-            res = res + re.escape(c)
-    return res + '\Z(?ms)'
-
-fnmatch.translate = translate
-
+from patch_all import *
 from github import Github
+import threading
+import time
 
-g = Github("tehalexf", "PowerPoint2007")
+from flask import Flask
+app = Flask(__name__)
 
-for i in  g.get_user().get_repos():
-    print i.name, i.name =='axis'
-    if i.name == 'axis':
-        repos = i
-    print i.clone_url
+@app.route("/")
+def hello():
+    return "Hello World!"
 
-print repos.name
-print repos.get_commits()[0].sha
+LOGINS = {}
+REPOS = set()
+
+class GittleGitHubRepo:
+	def __init__(self, gittle, github, last_sha):
+		self.gittle = gittle
+		self.github = github
+		self.last_sha = last_sha
+
+	def get_sha(self):
+		return self.github.get_commits()[0].sha[0:10]
+
+	def needs_update(self):
+		return self.github.get_commits()[0].sha[0:10] != self.last_sha
+
+	def update(self):
+		self.gittle.pull()
+		self.last_sha = self.github.get_commits()[0].sha[0:10] 
+
+#store multiple logins
+def login():
+	f =  open("login.txt",'r')
+	while(True):
+		username = f.readline()
+		password = f.readline()
+		if not password:
+			break #EOF reached
+		username = username.replace('\n', '')
+		if username not in LOGINS:
+			LOGINS[username] = Github(username, password.replace('\n', ''))
+
+#Fetch all git repos
+def getRepos():
+	f =  open("trackedrepos.txt",'r')
+	tempGittleRepos = {}
+	while(True):
+		line = f.readline()
+		if not line:
+			break #EOF reached
+		line = line.replace('\n', '').replace(' ','').split(',')
+		if len(line) == 4:
+			if line[0] not in LOGINS:
+				print("You did not provide credentials for " + line[0])
+			else:
+				try:
+					repo = Gittle.clone(line[1], line[3])
+				except OSError:
+					repo = Gittle.init(line[3])
+				tempGittleRepos[line[1]] = repo
+				repo.switch_branch(str.encode(line[2]))
+		else:
+			print("Invalid line: " + ' '.join(line))
+	for user in LOGINS:
+		myrepos = LOGINS[user].get_user().get_repos()
+		for repo in myrepos:
+			cloneurl = repo.clone_url.replace("api.", '')
+			if cloneurl in tempGittleRepos:
+				REPOS.add(GittleGitHubRepo(tempGittleRepos[cloneurl], \
+					repo, repo.get_commits()[0].sha[0:10]))
+
+
+login()
+getRepos()
 
 
 
-repo_path = 'data'
-repo_url = 'git://github.com/rhocode/axis.git'
+def poll():
+	print("Polling")
+	for i in REPOS:
+		if i.needs_update():
+			i.update()
+			print("Updated " + i)	
+	time.sleep(2)
+	return
+
+def keepPolling():
+	while(True):
+		poll()
+		
+
+if __name__ == "__main__":
+	t = threading.Thread(target=keepPolling)
+	t.start()
+	app.run(host='0.0.0.0')
+	
+
+# for i in  g.get_user().get_repos():
+#     print i.name, i.name =='axis'
+#     if i.name == 'axis':
+#         repos = i
+#     print i.clone_url
+
+# print repos.name
+# print repos.get_commits()[0].sha
+
+
+
+# repo_path = 'data'
+# repo_url = 'git://github.com/rhocode/axis.git'
 
 
 
 
-try:
-	repo = Gittle.clone(repo_url, repo_path)
-except OSError:
-	repo = Gittle.init(repo_path)
+# try:
+# 	repo = Gittle.clone(repo_url, repo_path)
+# except OSError:
+# 	repo = Gittle.init(repo_path)
 
-repo.switch_branch(b'gh-pages')
 
-repo.pull()
+
+# repo.pull()
 
 # client, host_path = get_transport_and_path("https://github.com/rhocode/axis.git")
 # r = Repo.init("test", mkdir=True)
